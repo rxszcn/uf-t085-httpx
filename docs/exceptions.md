@@ -28,6 +28,7 @@ For an overview of how to work with HTTPX exceptions, see [Exceptions (Quickstar
         * TooManyRedirects
     * HTTPStatusError
 * InvalidURL
+* InvalidHeader
 * CookieConflict
 * StreamError
     * StreamConsumed
@@ -103,6 +104,9 @@ For an overview of how to work with HTTPX exceptions, see [Exceptions (Quickstar
     :docstring:
 
 ::: httpx.InvalidURL
+    :docstring:
+
+::: httpx.InvalidHeader
     :docstring:
 
 ::: httpx.CookieConflict

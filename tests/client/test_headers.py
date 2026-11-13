@@ -185,6 +185,121 @@ def test_header_with_incorrect_value():
         httpx.Headers({"foo": None})  # type: ignore
 
 
+NON_LATIN1_VALUE = "值含非Latin1字符"
+
+
+def test_build_request_rejects_non_latin1_header_value_upfront():
+    """
+    An unencodable header value fails while the request is being constructed,
+    naming the offending field, instead of surfacing as an opaque codec error
+    from the transport while writing to the wire.
+    """
+    client = httpx.Client(transport=httpx.MockTransport(echo_headers))
+    with pytest.raises(httpx.InvalidHeader, match="X-Custom-Header") as exc_info:
+        client.build_request(
+            "GET",
+            "http://example.org/echo_headers",
+            headers={"X-Custom-Header": NON_LATIN1_VALUE},
+        )
+    assert repr(NON_LATIN1_VALUE) in str(exc_info.value)
+
+
+def test_request_constructor_rejects_non_latin1_header_value():
+    with pytest.raises(httpx.InvalidHeader, match="X-Custom-Header"):
+        httpx.Request(
+            "GET",
+            "http://example.org/",
+            headers=[("X-Custom-Header", NON_LATIN1_VALUE)],
+        )
+
+
+def test_client_level_headers_reject_non_latin1_value():
+    with pytest.raises(httpx.InvalidHeader, match="X-Client-Header"):
+        httpx.Client(
+            transport=httpx.MockTransport(echo_headers),
+            headers={"X-Client-Header": NON_LATIN1_VALUE},
+        )
+
+
+def test_multi_value_header_reports_offending_entry():
+    """
+    The multi-value write path must identify the specific offending value
+    rather than forcing a binary search across headers.
+    """
+    client = httpx.Client(transport=httpx.MockTransport(echo_headers))
+    headers = [
+        ("X-Multi", "ascii-one"),
+        ("X-Multi", NON_LATIN1_VALUE),
+        ("X-Multi", "ascii-two"),
+    ]
+    with pytest.raises(httpx.InvalidHeader) as exc_info:
+        client.build_request(
+            "GET", "http://example.org/echo_headers", headers=headers
+        )
+    message = str(exc_info.value)
+    assert "X-Multi" in message
+    assert repr(NON_LATIN1_VALUE) in message
+
+
+def test_request_event_hook_header_rewrite_uses_same_checkpoint():
+    """
+    Headers mutated by a request event hook go through the same validation
+    checkpoint as the initial request construction.
+    """
+
+    def rewrite_header(request: httpx.Request) -> None:
+        request.headers["X-Hook-Header"] = NON_LATIN1_VALUE
+
+    client = httpx.Client(
+        transport=httpx.MockTransport(echo_headers),
+        event_hooks={"request": [rewrite_header]},
+    )
+    with pytest.raises(httpx.InvalidHeader, match="X-Hook-Header"):
+        client.get("http://example.org/echo_headers")
+
+
+def test_redirect_rebuild_uses_same_checkpoint():
+    """
+    A redirect rebuilds the request and funnels its headers through the same
+    validation checkpoint, so an invalid value introduced for the follow-up
+    request fails explicitly.
+    """
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        if request.url.path == "/redirect":
+            return httpx.Response(302, headers={"location": "/destination"})
+        return httpx.Response(200)
+
+    def add_bad_header(request: httpx.Request) -> None:
+        if request.url.path == "/destination":
+            request.headers["X-Redirect-Header"] = NON_LATIN1_VALUE
+
+    client = httpx.Client(
+        transport=httpx.MockTransport(handler),
+        event_hooks={"request": [add_bad_header]},
+        follow_redirects=True,
+    )
+    with pytest.raises(httpx.InvalidHeader, match="X-Redirect-Header"):
+        client.get("http://example.org/redirect")
+
+
+def test_latin1_header_value_round_trips_through_request():
+    """
+    ASCII and Latin-1 encodable values remain fully supported and travel to
+    the transport as ISO-8859-1 bytes.
+    """
+    client = httpx.Client(transport=httpx.MockTransport(echo_headers))
+    request = client.build_request(
+        "GET",
+        "http://example.org/echo_headers",
+        headers={"X-Latin-Header": "café"},
+    )
+    assert request.headers["x-latin-header"] == "café"
+    assert request.headers["x-latin-header"].encode("iso-8859-1") == b"caf\xe9"
+    response = client.send(request)
+    assert response.status_code == 200
+
+
 def test_host_with_auth_and_port_in_url():
     """
     The Host header should only include the hostname, or hostname:port

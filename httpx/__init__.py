@@ -57,6 +57,7 @@ __all__ = [
     "HTTPError",
     "HTTPStatusError",
     "HTTPTransport",
+    "InvalidHeader",
     "InvalidURL",
     "Limits",
     "LocalProtocolError",

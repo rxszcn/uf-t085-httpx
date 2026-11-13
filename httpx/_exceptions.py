@@ -23,6 +23,7 @@ Our exception hierarchy:
     + TooManyRedirects
   x HTTPStatusError
 * InvalidURL
+* InvalidHeader
 * CookieConflict
 * StreamError
   x StreamConsumed
@@ -47,6 +48,7 @@ __all__ = [
     "DecodingError",
     "HTTPError",
     "HTTPStatusError",
+    "InvalidHeader",
     "InvalidURL",
     "LocalProtocolError",
     "NetworkError",
@@ -271,6 +273,20 @@ class HTTPStatusError(HTTPError):
 class InvalidURL(Exception):
     """
     URL is improperly formed or cannot be parsed.
+    """
+
+    def __init__(self, message: str) -> None:
+        super().__init__(message)
+
+
+class InvalidHeader(ValueError):
+    """
+    A header field name or value is not valid.
+
+    For outgoing requests header values must be encodable as ISO-8859-1
+    (which includes all ASCII values). This is raised up front, while the
+    request is being constructed, so that the offending field name and value
+    are reported instead of surfacing as a low-level codec error later on.
     """
 
     def __init__(self, message: str) -> None:

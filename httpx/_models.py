@@ -24,6 +24,7 @@ from ._decoders import (
 from ._exceptions import (
     CookieConflict,
     HTTPStatusError,
+    InvalidHeader,
     RequestNotRead,
     ResponseNotRead,
     StreamClosed,
@@ -71,7 +72,47 @@ def _normalize_header_key(key: str | bytes, encoding: str | None = None) -> byte
     return key if isinstance(key, bytes) else key.encode(encoding or "ascii")
 
 
-def _normalize_header_value(value: str | bytes, encoding: str | None = None) -> bytes:
+def _summarize_header_value(value: str, limit: int = 40) -> str:
+    """
+    Produce a short, single-line repr of a header value for error messages,
+    truncating long values so the exception message stays readable.
+    """
+    summary = repr(value)
+    if len(summary) > limit:
+        summary = summary[: limit - 3] + "..."
+    return summary
+
+
+def _ensure_header_value_encodable(key: str | bytes, value: str) -> None:
+    """
+    Validate that an outgoing header value can be encoded as ISO-8859-1.
+
+    HTTP/1.1 field values are transmitted as bytes within the ISO-8859-1
+    range, so any value containing a code point above U+00FF cannot be sent.
+    We perform this check up front -- at the single point every header write
+    funnels through -- so that the failure names the offending field and
+    value, rather than bubbling up as an opaque codec error from the
+    transport while the request is being written to the wire.
+
+    The field name is reported using the business-side spelling supplied by
+    the caller; it is not lowercased for the error message.
+    """
+    try:
+        value.encode("iso-8859-1")
+    except UnicodeEncodeError as exc:
+        raise InvalidHeader(
+            f"Invalid value for header {key!r}: "
+            f"{_summarize_header_value(value)} is not encodable as ISO-8859-1. "
+            "Header values must contain only characters in the range U+0000 "
+            f"to U+00FF ({exc.reason})."
+        ) from None
+
+
+def _normalize_header_value(
+    value: str | bytes,
+    encoding: str | None = None,
+    key: str | bytes = "",
+) -> bytes:
     """
     Coerce str/bytes into a strictly byte-wise HTTP header value.
     """
@@ -79,7 +120,17 @@ def _normalize_header_value(value: str | bytes, encoding: str | None = None) -> 
         return value
     if not isinstance(value, str):
         raise TypeError(f"Header value must be str or bytes, not {type(value)}")
-    return value.encode(encoding or "ascii")
+    if encoding is None:
+        # Outgoing header values are transmitted as ISO-8859-1 bytes, which
+        # covers the full ASCII and Latin-1 range. Validate this up front so
+        # an unencodable value fails here, naming the field and value, rather
+        # than as an opaque codec error from the transport.
+        _ensure_header_value_encodable(key, value)
+        return value.encode("iso-8859-1")
+    # An explicit encoding is honored as-is. This is used for round-tripping
+    # headers whose byte representation is already known (e.g. response-side
+    # decoding), whose existing behaviour must be preserved.
+    return value.encode(encoding)
 
 
 def _parse_content_type_charset(content_type: str) -> str | None:
@@ -153,12 +204,12 @@ class Headers(typing.MutableMapping[str, str]):
         elif isinstance(headers, Mapping):
             for k, v in headers.items():
                 bytes_key = _normalize_header_key(k, encoding)
-                bytes_value = _normalize_header_value(v, encoding)
+                bytes_value = _normalize_header_value(v, encoding, key=k)
                 self._list.append((bytes_key, bytes_key.lower(), bytes_value))
         elif headers is not None:
             for k, v in headers:
                 bytes_key = _normalize_header_key(k, encoding)
-                bytes_value = _normalize_header_value(v, encoding)
+                bytes_value = _normalize_header_value(v, encoding, key=k)
                 self._list.append((bytes_key, bytes_key.lower(), bytes_value))
 
         self._encoding = encoding
@@ -306,8 +357,11 @@ class Headers(typing.MutableMapping[str, str]):
         Set the header `key` to `value`, removing any duplicate entries.
         Retains insertion order.
         """
-        set_key = key.encode(self._encoding or "utf-8")
-        set_value = value.encode(self._encoding or "utf-8")
+        # Route every direct mutation through the same normalization and
+        # encoding pre-check as the constructor, so invalid values fail here
+        # with a field-specific error regardless of the write path.
+        set_key = _normalize_header_key(key, self._encoding)
+        set_value = _normalize_header_value(value, self._encoding, key=key)
         lookup_key = set_key.lower()
 
         found_indexes = [

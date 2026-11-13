@@ -13,6 +13,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 ### Added
 
 * Expose `FunctionAuth` from the public API. (#3699)
+* Validate outgoing header values up front and raise `InvalidHeader`, naming the offending field and a summary of the value, when a value cannot be encoded as ISO-8859-1. ASCII and Latin-1 values are unaffected, and the check is applied uniformly across both the single-value and multi-value header write paths.
 
 ## 0.28.1 (6th December, 2024)
 
